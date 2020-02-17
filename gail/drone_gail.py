@@ -167,6 +167,8 @@ def update_params(batch, i_iter):
         discrim_loss = discrim_criterion(g_o, ones((states.shape[0], 1), device=device)) + \
             discrim_criterion(e_o, zeros((expert_traj.shape[0], 1), device=device))
         discrim_loss.backward()
+        torch.nn.utils.clip_grad_norm_(discrim_net.parameters(), 0.5)
+
         optimizer_discrim.step()
 
     """perform mini-batch PPO update"""
@@ -251,7 +253,7 @@ def main_loop():
         
         if args.save_model_interval > 0 and (i_iter+1) % args.save_model_interval == 0:
             to_device(torch.device('cpu'), policy_net, value_net, discrim_net)
-            pickle.dump((policy_net, value_net, discrim_net), \
+            pickle.dump((policy_net, value_net, discrim_net, running_state), \
             open(os.path.join(save_path,'GAIL_{0}_itr_{1}.p'.format(args.env_name, i_iter)), 'wb'))
             to_device(device, policy_net, value_net, discrim_net)
 

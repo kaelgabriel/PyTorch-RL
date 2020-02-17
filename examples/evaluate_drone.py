@@ -50,7 +50,6 @@ device = torch.device('cpu')
 print('args.render = ', (not args.render))
 
 
-# import sys; sys.exit(0)
 env = DroneEnv(random=args.env_reset_mode,seed=args.seed, headless = not args.render)
 
 state_dim = env.observation_space.shape[0]
@@ -63,9 +62,17 @@ torch.manual_seed(args.seed)
 # env.seed(args.seed)
 
 
-policy_net, value_net, running_state = pickle.load(open(args.file, "rb"))
+try:
+    policy_net, value_net, discrim_net, running_state = pickle.load(open(args.file, "rb"))
+    print('1')
+except:
+    policy_net, value_net,  running_state = pickle.load(open(args.file, "rb"))
+    print('2')
 
+print('type running state = ',type(running_state))
 
+env.shutdown();import sys;sys.exit(0)
+print
 policy_net.to(device)
 value_net.to(device)
 
