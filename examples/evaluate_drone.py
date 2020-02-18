@@ -29,28 +29,25 @@ parser.add_argument('--seed', type=int, default=1, metavar='N',
                     help='random seed (default: 1)')
 parser.add_argument('--max_timesteps', type=int, default=1000,
                     help='Maximum timesteps for evaluation (default: 1000)')
-parser.add_argument('--render', action='store_true', default=True,
+parser.add_argument('--headless', action='store_true', default=True,
                     help='To render or no the env')
 
 
 
 args = parser.parse_args()
 
-
-
-
 dtype = torch.float64
 torch.set_default_dtype(dtype)
 device = torch.device('cpu')
 
 
-
 """environment"""
 # env = gym.make(args.env_name)
-print('args.render = ', (not args.render))
+# env.shutdown();import sys;sys.exit(0)
+# import sys;sys.exit(0)
 
 
-env = DroneEnv(random=args.env_reset_mode,seed=args.seed, headless = not args.render)
+env = DroneEnv(random=args.env_reset_mode,seed=args.seed, headless = args.headless)
 
 state_dim = env.observation_space.shape[0]
 is_disc_action = len(env.action_space.shape) == 0
@@ -71,7 +68,6 @@ except:
 
 print('type running state = ',type(running_state))
 
-env.shutdown();import sys;sys.exit(0)
 print
 policy_net.to(device)
 value_net.to(device)
