@@ -66,6 +66,11 @@ parser.add_argument('--log-interval', type=int, default=1, metavar='N',
                     help='interval between training status logs (default: 10)')
 parser.add_argument('--save-model-interval', type=int, default=0, metavar='N',
                     help="interval between saving model (default: 0, means don't save)")
+parser.add_argument('--obs-running-state', type=int, default=1, choices = [0,1],
+                    help="If the observation will be normalized (default: 1, it will be)")
+parser.add_argument('--reward-running-state', type=int, default=0, choices = [0,1],
+                    help="If the reward will be normalized (default: 0, it won't be)")
+
 parser.add_argument('--gpu-index', type=int, default=0, metavar='N')
 parser.add_argument('--save_path', type=str,help="path to save model pickle and log file", default='DEFAULT_DIR')
 
@@ -88,8 +93,12 @@ env = DroneEnv(random=args.env_reset_mode,seed=args.seed)
 state_dim = env.observation_space.shape[0]
 is_disc_action = len(env.action_space.shape) == 0
 action_dim = 1 if is_disc_action else env.action_space.shape[0]
-running_state = ZFilter((state_dim,), clip=5)
-# running_reward = ZFilter((1,), demean=False, clip=10)
+
+if args.obs_running_state == 1:
+    running_state = ZFilter((state_dim,), clip=5)
+else:
+    running_state = None
+
 
 
 
@@ -124,13 +133,14 @@ optim_batch_size = args.optim_batch_size
 expert_traj, running_state = pickle.load(open(args.expert_traj_path, "rb"))
 running_state.fix = True
 
+if args.obs_running_state == 0:
+    running_state = None
+
 
 def expert_reward(state, action):
     state_action = tensor(np.hstack([state, action]), dtype=dtype)
     with torch.no_grad():
         return -math.log(discrim_net(state_action)[0].item())
-
-
 
 
 
@@ -190,6 +200,7 @@ def update_params(batch, i_iter):
             policy_surr, value_loss, ev, clip_frac, entropy, approxkl = ppo_step(policy_net, value_net, optimizer_policy, optimizer_value, 1, states_b, actions_b, returns_b,
                      advantages_b, fixed_log_probs_b, args.clip_epsilon, args.l2_reg)
 
+
     return discrim_loss.item(), policy_surr, value_loss, ev, clip_frac, entropy, approxkl
 def main_loop():
 
@@ -200,6 +211,8 @@ def main_loop():
         'avg_c_reward','avg_c_reward_per_episode','max_c_reward','min_c_reward']
     algo_cols = ['discrim_loss','policy_loss','value_loss','explained_variance', \
                 'clipfrac','entropy','aproxkl']
+
+
     with open(os.path.join(save_path,'progress.csv'), 'w') as outcsv:	
         writer = csv.writer(outcsv, delimiter=';', quotechar='|', quoting=csv.QUOTE_MINIMAL)	
         writer.writerow(list_cols + algo_cols)	

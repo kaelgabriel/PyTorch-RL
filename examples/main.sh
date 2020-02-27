@@ -4,7 +4,7 @@
 
 SEED=42
 # CUDA=True
-ENV_NAME=Teste_3
+ENV_NAME=Optmizations_PPO
 NUM_EPOCHS=2000
 env_reset_mode=Discretized_Uniform
 

@@ -1,6 +1,7 @@
 import torch.nn as nn
 import torch
 from utils.math import *
+from torch.distributions import Normal
 
 
 class Policy(nn.Module):
@@ -40,6 +41,15 @@ class Policy(nn.Module):
         action_mean, _, action_std = self.forward(x)
         
         action = torch.normal(action_mean, action_std)
+        dist = Normal(action_mean, action_std)
+        z = dist.sample()
+        ## Tanh 
+        # print('z = ', z)
+        # print('action = ', action)
+        # print("prev action = ", action)
+        action = torch.tanh(action).detach().cpu()#.numpy()
+        # print("post action = ", action)
+
         return action
     
    
