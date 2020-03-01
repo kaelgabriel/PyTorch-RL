@@ -8,8 +8,6 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from utils import *
 from models.mlp_policy import Policy
-from models.mlp_sac_policy import Policy_Tanh_Gaussian
-
 from models.mlp_critic import Value
 from models.mlp_policy_disc import DiscretePolicy
 from core.ppo import ppo_step
@@ -49,8 +47,6 @@ parser.add_argument('--learning-rate', type=float, default=3e-4, metavar='G',
                     help='learning rate (default: 3e-4)')
 parser.add_argument('--clip-epsilon', type=float, default=0.2, metavar='N',
                     help='clipping epsilon for PPO')
-parser.add_argument('--sac-policy',action='store_true', default=False,
-                    help='use san tanh gaussian')
 parser.add_argument('--optim-epochs', type=int, default=10,
                     help='epochs for the internal optimization')
 parser.add_argument('--optim-batch-size', type=int, default=64,
@@ -110,13 +106,8 @@ torch.manual_seed(args.seed)
 if args.model_path is None:
     if is_disc_action:
         policy_net = DiscretePolicy(state_dim, env.action_space.n)
-    
     else:
-        if args.sac_policy:
-            policy_net = Policy_Tanh_Gaussian(state_dim, env.action_space.shape[0], hidden_size=(64,64), log_std=args.log_std)
-
-        else:
-            policy_net = Policy(state_dim, env.action_space.shape[0], log_std=args.log_std)
+        policy_net = Policy(state_dim, env.action_space.shape[0], log_std=args.log_std)
     value_net = Value(state_dim)
 else:
     policy_net, value_net, running_state,  = pickle.load(open(args.model_path, "rb"))
@@ -128,10 +119,6 @@ value_net.to(device)
 
 optimizer_policy = torch.optim.Adam(policy_net.parameters(), lr=args.learning_rate)
 optimizer_value = torch.optim.Adam(value_net.parameters(), lr=args.learning_rate)
-
-params = list(policy_net.parameters()) + list(value_net.parameters())
-unique_optimizer = torch.optim.Adam(params, lr=args.learning_rate)
-
 
 # optimization epoch number and batch size for PPO
 optim_epochs = args.optim_epochs
@@ -150,9 +137,9 @@ check_dir(save_path)
 
 
 
-# OLDVPRED = torch.FloatTensor([])
 
-def update_params(batch, i_iter, scheduler):
+
+def update_params(batch, i_iter, scheduler_policy, scheduler_value):
     states = torch.from_numpy(np.stack(batch.state)).to(dtype).to(device)
     actions = torch.from_numpy(np.stack(batch.action)).to(dtype).to(device)
     rewards = torch.from_numpy(np.stack(batch.reward)).to(dtype).to(device)
@@ -181,13 +168,8 @@ def update_params(batch, i_iter, scheduler):
                 states[ind], actions[ind], advantages[ind], returns[ind], fixed_log_probs[ind]
 
             
-            # policy_surr, value_loss, ev, clip_frac, entropy, approxkl = ppo_step(policy_net, value_net, \
-            #      optimizer_policy, optimizer_value, 1, states_b, actions_b, returns_b,
-            #          advantages_b, fixed_log_probs_b, args.clip_epsilon, args.l2_reg, scheduler_policy, scheduler_value)
-  
-            policy_surr, value_loss, ev, clip_frac, entropy, approxkl = ppo_step(policy_net, value_net, \
-                 unique_optimizer, 1, states_b, actions_b, returns_b,
-                     advantages_b, fixed_log_probs_b, args.clip_epsilon, args.l2_reg, scheduler)
+            policy_surr, value_loss, ev, clip_frac, entropy, approxkl = ppo_step(policy_net, value_net, optimizer_policy, optimizer_value, 1, states_b, actions_b, returns_b,
+                     advantages_b, fixed_log_probs_b, args.clip_epsilon, args.l2_reg, scheduler_policy, scheduler_value)
 
         return policy_surr, value_loss, ev, clip_frac, entropy, approxkl
 
@@ -243,10 +225,8 @@ def main_loop():
     nupdates = args.max_iter_num  # nupdates = total_timesteps//nbatch
     lr_lambda=lambda f:(1.0 - (f - 1.0) / nupdates)
     
-    # scheduler_policy = torch.optim.lr_scheduler.LambdaLR(optimizer_policy, lr_lambda)
-    # scheduler_value = torch.optim.lr_scheduler.LambdaLR(optimizer_value, lr_lambda)
-    scheduler = torch.optim.lr_scheduler.LambdaLR(unique_optimizer, lr_lambda)
-
+    scheduler_policy = torch.optim.lr_scheduler.LambdaLR(optimizer_policy, lr_lambda)
+    scheduler_value = torch.optim.lr_scheduler.LambdaLR(optimizer_value, lr_lambda)
 
 
 
@@ -269,8 +249,7 @@ def main_loop():
         batch, log = agent.collect_samples(args.min_batch_size)
         print('Done batching')
         t0 = time.time()
-        loss_policy, loss_value, ev, clipfrac, entropy, approxkl = \
-            update_params(batch, i_iter, scheduler)
+        loss_policy, loss_value, ev, clipfrac, entropy, approxkl = update_params(batch, i_iter, scheduler_policy, scheduler_value)
         t1 = time.time()
 
         print('Loss_policy = {0:.4f}'.format(loss_policy))
