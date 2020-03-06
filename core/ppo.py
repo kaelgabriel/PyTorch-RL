@@ -87,7 +87,7 @@ def ppo_step_two_losses(policy_net, value_net, optimizer_policy, optimizer_value
             value_loss = (values_pred - returns).pow(2).mean()
         optimizer_value.zero_grad()
         value_loss.backward()
-        torch.nn.utils.clip_grad_norm_(value_net.parameters(), 0.5)
+        torch.nn.utils.clip_grad_norm_(value_net.parameters(), 10)
 
         optimizer_value.step()
 
@@ -106,7 +106,6 @@ def ppo_step_two_losses(policy_net, value_net, optimizer_policy, optimizer_value
             ev = explained_variance(values_pred.squeeze(),returns.squeeze())
         except:
             ev=np.nan
-
         clipfrac =  (torch.gt(torch.abs(ratio - 1), clip_epsilon)).float().mean().item()
         ## Calculate Approx KL
         diff = log_probs - fixed_log_probs
@@ -120,7 +119,7 @@ def ppo_step_two_losses(policy_net, value_net, optimizer_policy, optimizer_value
 
     optimizer_policy.zero_grad()
     policy_loss.backward()
-    torch.nn.utils.clip_grad_norm_(policy_net.parameters(), 0.5)
+    torch.nn.utils.clip_grad_norm_(policy_net.parameters(), 10)
     optimizer_policy.step()
 
     return policy_loss.item(), value_loss.item(), ev, clipfrac, entropy.item(), approxkl.item()

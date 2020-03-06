@@ -33,13 +33,16 @@ def collect_samples(pid, queue, env, policy, custom_reward,
             state_var = torch.DoubleTensor(state).unsqueeze(0)
             with torch.no_grad():
                 if mean_action:
-                    action = np.round(policy.select_action_deterministic(state_var).flatten().numpy(),4)
-
+                    pre_tanh_action = policy.select_action_deterministic(state_var).flatten()
+                
                 else:
-                    action = policy.select_action_stochastic(state_var)[0].numpy()
+                    pre_tanh_action = policy.select_action_stochastic(state_var)[0]
+            with torch.no_grad():
+                action = torch.tanh(pre_tanh_action).detach().cpu().numpy()
 
             action = int(action) if policy.is_disc_action else action.astype(np.float64)
-
+            action = np.round(action,4) ## prevent minor vibrations
+            
             next_state, reward, done, _ = env.step(np.clip(action*100,a_min=-100, a_max=100))
 
             reward_episode += reward
@@ -54,7 +57,7 @@ def collect_samples(pid, queue, env, policy, custom_reward,
 
             mask = 0 if done else 1
 
-            memory.push(state, action, mask, next_state, reward)
+            memory.push(state, action, mask, next_state, reward, pre_tanh_action)
 
             if render:
                 env.render()

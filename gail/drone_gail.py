@@ -12,16 +12,25 @@ from models.mlp_critic import Value
 from models.mlp_policy_disc import DiscretePolicy
 from models.mlp_discriminator import Discriminator
 from torch import nn
-from core.ppo import ppo_step
+from core.ppo import ppo_step_one_loss, ppo_step_two_losses
+
 from core.common import estimate_advantages
 from core.agent import Agent
-
+from dataset import Dset
 
 from larocs_sim.envs.drone_env import DroneEnv
 
 import csv
 
-    
+
+
+def terminate():
+    try:
+        env.shutdown();import sys; sys.exit(0)
+    except:
+        import sys; sys.exit(0)
+
+
 def check_dir(file_name):
     directory = os.path.dirname(file_name)
     if not os.path.exists(directory):
@@ -68,6 +77,10 @@ parser.add_argument('--save-model-interval', type=int, default=0, metavar='N',
                     help="interval between saving model (default: 0, means don't save)")
 parser.add_argument('--gpu-index', type=int, default=0, metavar='N')
 parser.add_argument('--save_path', type=str,help="path to save model pickle and log file", default='DEFAULT_DIR')
+parser.add_argument('--two-losses', type=int, default=1, choices = [0,1], \
+                    help="Whether to use separated losses",)
+parser.add_argument('--ent-coef', type=float, default=0.01, 
+                    help='Entropy coefficientl2 (default: 0.01)')
 
 
 
@@ -85,7 +98,8 @@ if torch.cuda.is_available():
 print("Ok")
 """environment"""
 env = DroneEnv(random=args.env_reset_mode,seed=args.seed)
-state_dim = env.observation_space.shape[0]
+action_dim = env.action_space.shape[0]
+state_dim = env.observation_space[0]
 is_disc_action = len(env.action_space.shape) == 0
 action_dim = 1 if is_disc_action else env.action_space.shape[0]
 running_state = ZFilter((state_dim,), clip=5)
@@ -124,6 +138,7 @@ optim_batch_size = args.optim_batch_size
 expert_traj, running_state = pickle.load(open(args.expert_traj_path, "rb"))
 running_state.fix = True
 
+exp_dataset = Dset(expert_traj,randomize=False)
 
 def expert_reward(state, action):
     state_action = tensor(np.hstack([state, action]), dtype=dtype)
@@ -158,16 +173,16 @@ def update_params(batch, i_iter):
     """get advantage estimation from the trajectories"""
     advantages, returns = estimate_advantages(rewards, masks, values, args.gamma, args.tau, device)
 
-    """update discriminator"""
-    for _ in range(1):
-        expert_state_actions = torch.from_numpy(expert_traj).to(dtype).to(device)
-        g_o = discrim_net(torch.cat([states, actions], 1))
-        e_o = discrim_net(expert_state_actions)
-        optimizer_discrim.zero_grad()
-        discrim_loss = discrim_criterion(g_o, ones((states.shape[0], 1), device=device)) + \
-            discrim_criterion(e_o, zeros((expert_traj.shape[0], 1), device=device))
-        discrim_loss.backward()
-        optimizer_discrim.step()
+    # """update discriminator"""
+    # for _ in range(1):
+    #     expert_state_actions = torch.from_numpy(expert_traj).to(dtype).to(device)
+    #     g_o = discrim_net(torch.cat([states, actions], 1))
+    #     e_o = discrim_net(expert_state_actions)
+    #     optimizer_discrim.zero_grad()
+    #     discrim_loss = discrim_criterion(g_o, ones((states.shape[0], 1), device=device)) + \
+    #         discrim_criterion(e_o, zeros((expert_traj.shape[0], 1), device=device))
+    #     discrim_loss.backward()
+    #     optimizer_discrim.step()
 
     """perform mini-batch PPO update"""
     optim_iter_num = int(math.ceil(states.shape[0] / optim_batch_size))
@@ -181,14 +196,43 @@ def update_params(batch, i_iter):
 
         for i in range(optim_iter_num):
             ind = slice(i * optim_batch_size, min((i + 1) * optim_batch_size, states.shape[0]))
-            states_b, actions_b, advantages_b, returns_b, fixed_log_probs_b = \
-                states[ind], actions[ind], advantages[ind], returns[ind], fixed_log_probs[ind]
+            # states_b, actions_b, advantages_b, returns_b, fixed_log_probs_b = \
+                # states[ind], actions[ind], advantages[ind], returns[ind], fixed_log_probs[ind]
+            states_b, actions_b, advantages_b, returns_b, fixed_log_probs_b, values_b = \
+                states[ind], actions[ind], advantages[ind], returns[ind], fixed_log_probs[ind], values[ind]
 
      
-            policy_surr, value_loss, ev, clip_frac, entropy, approxkl = ppo_step(policy_net, value_net, optimizer_policy, optimizer_value, 1, states_b, actions_b, returns_b,
-                     advantages_b, fixed_log_probs_b, args.clip_epsilon, args.l2_reg)
+            if args.two_losses:
+                policy_surr, value_loss, ev, clipfrac, entropy, approxkl = ppo_step_two_losses(policy_net, value_net, \
+                optimizer_policy, optimizer_value, 1, states_b, actions_b, returns_b,
+                        advantages_b, values_b, fixed_log_probs_b, args.clip_epsilon, args.l2_reg, ent_coef=args.ent_coef)
 
-    return discrim_loss.item(), policy_surr, value_loss, ev, clip_frac, entropy, approxkl
+            else:
+                policy_surr, value_loss, ev, clipfrac, entropy, approxkl = ppo_step_one_loss(policy_net, value_net, \
+                unique_optimizer, 1, states_b, actions_b, returns_b,
+                        advantages_b, values_b, fixed_log_probs_b, args.clip_epsilon, args.l2_reg, ent_coef=args.ent_coef)
+
+    batch_size = len(batch.state)
+    """update discriminator"""
+    for _ in range(1):
+        expert_state_actions = torch.from_numpy(expert_traj).to(dtype).to(device)
+        
+
+        g_o = discrim_net(torch.cat([states, actions], 1))
+
+        expert_batch = torch.from_numpy(exp_dataset.get_next_batch(batch_size)).to(dtype).to(device)
+        e_o = discrim_net(expert_batch)
+        optimizer_discrim.zero_grad()
+
+        discrim_loss = discrim_criterion(g_o, ones((states.shape[0], 1), device=device)) + \
+            discrim_criterion(e_o, zeros((expert_traj.shape[0], 1), device=device))
+        discrim_loss.backward()
+        optimizer_discrim.step()
+
+
+    return discrim_loss.item(), policy_surr, value_loss, ev, clipfrac, entropy, approxkl
+
+
 def main_loop():
 
     # list_cols = ['num_steps', 'avg_c_reward','avg_reward','avg_c_reward_per_episode']

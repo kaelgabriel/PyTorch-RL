@@ -14,6 +14,13 @@ def normal_log_density(x, mean, log_std, std):
     log_density = -(x - mean).pow(2) / (2 * var) - 0.5 * math.log(2 * math.pi) - log_std
     return log_density.sum(1, keepdim=True)
 
+
+# def neglogp(self, x):
+#     return 0.5 * tf.reduce_sum(tf.square((x - self.mean) / self.std), axis=-1) \
+#             + 0.5 * np.log(2.0 * np.pi) * tf.to_float(tf.shape(x)[-1]) \
+#             + tf.reduce_sum(self.logstd, axis=-1)
+
+               
 def explained_variance(values,returns):
     """
     Computes fraction of variance that ypred explains about y.

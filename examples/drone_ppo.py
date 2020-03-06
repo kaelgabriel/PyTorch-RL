@@ -50,6 +50,8 @@ parser.add_argument('--tau', type=float, default=0.95, metavar='G',
                     help='gae (default: 0.95)')
 parser.add_argument('--l2-reg', type=float, default=1e-3, metavar='G',
                     help='l2 regularization regression (default: 1e-3)')
+parser.add_argument('--ent-coef', type=float, default=0.01, 
+                    help='Entropy coefficientl2 (default: 0.01)')
 parser.add_argument('--learning-rate', type=float, default=3e-4, metavar='G',
                     help='learning rate (default: 3e-4)')
 parser.add_argument('--clip-epsilon', type=float, default=0.2, metavar='N',
@@ -86,7 +88,11 @@ parser.add_argument('--reward', type=str, default='Normal',
                     help="Reward Function")
 parser.add_argument('--state', type=str, default='New', choices = ['New', 'Old', 'New_Double', 'New_Double'],
                     help="State Space")
+parser.add_argument('--log-prob-head', type=int, default=0, choices = [0,1],
+                    help="Uses fix log prob or predicts a log_std (default: 0, it won't be)")
 parser.add_argument('--gpu-index', type=int, default=0, metavar='N')
+
+
 args = parser.parse_args()
 
 
@@ -116,7 +122,7 @@ is_disc_action = len(env.action_space.shape) == 0
 # running_state = ZFilter((state_dim,), clip=5)
 
 if args.obs_running_state == 1:
-    running_state = ZFilter((state_dim,), clip=5)
+    running_state = ZFilter((state_dim,), clip=3)
 
 else:
     running_state = None
@@ -138,13 +144,21 @@ if args.model_path is None:
     if is_disc_action:
         policy_net = DiscretePolicy(state_dim, env.action_space.n)
     else:
-        policy_net = Policy(state_dim, env.action_space.shape[0],hidden_size=(256,256), activation='tanh', log_std=args.log_std)
+        policy_net = Policy(state_dim, env.action_space.shape[0],\
+        hidden_size=(256,256), activation='tanh', log_std=args.log_std,log_prob_head=args.log_prob_head)
+
     value_net = Value(state_dim, hidden_size=(256,256), activation='relu')
 else:
     policy_net, value_net, running_state,  = pickle.load(open(args.model_path, "rb"))
+policy_net.log_prob_head=args.log_prob_head
+
+print(args.model_path)
+
 policy_net.to(device)
 value_net.to(device)
 
+policy_net.log_std_min = -20
+policy_net.log_std_max = 2
 
 optimizer_policy = torch.optim.Adam(policy_net.parameters(), lr=args.learning_rate)
 optimizer_value = torch.optim.Adam(value_net.parameters(), lr=args.learning_rate)
@@ -173,20 +187,26 @@ check_dir(save_path)
 
 
 def update_params(batch, i_iter,scheduler, scheduler_policy, scheduler_value):
-
     states = torch.from_numpy(np.stack(batch.state)).to(dtype).to(device)
     actions = torch.from_numpy(np.stack(batch.action)).to(dtype).to(device)
     rewards = torch.from_numpy(np.stack(batch.reward)).to(dtype).to(device)
     masks = torch.from_numpy(np.stack(batch.mask)).to(dtype).to(device)
+    pre_tanh_actions = torch.from_numpy(np.stack(batch.pre_tanh_action)).to(dtype).to(device)
+
     with torch.no_grad():
         values = value_net(states)
-        fixed_log_probs = policy_net.get_log_prob(states, actions)[0]
+        # fixed_log_probs = policy_net.get_log_prob(states, actions)[0]
+        fixed_log_probs = policy_net.get_log_prob(states, pre_tanh_actions)[0]
+        print("LOG PROBA mean = ", fixed_log_probs.mean())
+        print("LOG PROBA std = ", fixed_log_probs.std())
 
     # rewards = (rewards - rewards.mean())/(rewards.std() + 1e-10)
 
     """get advantage estimation from the trajectories"""
     advantages, returns = estimate_advantages(rewards, masks, values, args.gamma, args.tau, device)
-
+    # print('ADV MEAN =' ,advantages.mean())
+    # print('ADV STD = ',advantages.std())
+    # returns = (returns - returns.mean())/(returns.std() + 1e-10)
     # print('Returns mean = ', returns.mean())
     # print('Returns std = ', returns.std())
     # print('Values mean = ', values.mean())
@@ -194,8 +214,6 @@ def update_params(batch, i_iter,scheduler, scheduler_policy, scheduler_value):
     with torch.no_grad():
         loss_value = (returns-values).pow(2).mean()
     print('Loss MSE mean = ',loss_value)
-    
-    print('Loss std = ', (returns-values).pow(2).std())
 
     print()    
     """perform mini-batch PPO update"""
@@ -217,15 +235,15 @@ def update_params(batch, i_iter,scheduler, scheduler_policy, scheduler_value):
             if args.two_losses:
                 policy_surr, value_loss, ev, clipfrac, entropy, approxkl = ppo_step_two_losses(policy_net, value_net, \
                 optimizer_policy, optimizer_value, 1, states_b, actions_b, returns_b,
-                        advantages_b, values_b, fixed_log_probs_b, args.clip_epsilon, args.l2_reg)
+                        advantages_b, values_b, fixed_log_probs_b, args.clip_epsilon, args.l2_reg, ent_coef=args.ent_coef)
 
             else:
                 policy_surr, value_loss, ev, clipfrac, entropy, approxkl = ppo_step_one_loss(policy_net, value_net, \
                 unique_optimizer, 1, states_b, actions_b, returns_b,
-                        advantages_b, values_b, fixed_log_probs_b, args.clip_epsilon, args.l2_reg)
+                        advantages_b, values_b, fixed_log_probs_b, args.clip_epsilon, args.l2_reg, ent_coef=args.ent_coef)
 
             list_value_loss.append(value_loss)
-        print('Epoch = {0} | Mean = {1} | STD = {2}'.format(epoc, np.mean(list_value_loss), np.std(list_value_loss)))
+        # print('Epoch = {0} | Mean = {1} | STD = {2}'.format(epoc, np.mean(list_value_loss), np.std(list_value_loss)))
     
     return policy_surr, loss_value.flatten().item(), ev, clipfrac, entropy, approxkl
 
@@ -236,11 +254,13 @@ def main_loop():
         'min_reward', 'lenght_mean', 'lenght_min','lenght_max','lenght_std', 'sample_time']
         # 'min_reward', 'sample_time', 'action_mean', 'action_min', 'action_max']
 
-    algo_cols = ['discrim_loss','policy_loss','value_loss','explained_variance', \
+    algo_cols = ['policy_loss','value_loss','explained_variance', \
                 'clipfrac','entropy','aproxkl']
 
 
-    with open(os.path.join(save_path,'progress.csv'), 'w') as outcsv:  
+    writepath = os.path.join(save_path,'progress.csv')
+    mode = 'a' if os.path.exists(writepath) else 'w'
+    with open(writepath, mode) as outcsv:  
         writer = csv.writer(outcsv, delimiter=';', quotechar='|', quoting=csv.QUOTE_MINIMAL)   
         writer.writerow(list_cols + algo_cols) 
 
@@ -257,7 +277,7 @@ def main_loop():
 
     begin=time.time()
     for i_iter in range(args.max_iter_num):
-        if i_iter % 5 ==0:
+        if i_iter % 1 ==0:
             env.restart=True ## Hacky because Pyrep breaks the Drone!
             env.reset()
             env.restart=False
@@ -298,7 +318,6 @@ def main_loop():
                 rew_writer.writerow(new_list + algo_cols_values)       
 
 
-
         if args.save_model_interval > 0 and (i_iter+1) % args.save_model_interval == 0:
             to_device(torch.device('cpu'), policy_net, value_net)
             pickle.dump((policy_net, value_net, running_state),
@@ -307,7 +326,7 @@ def main_loop():
 
 
         """clean up gpu memory"""
-        torch.cuda.empty_cache()
+        # torch.cuda.empty_cache()
         print('Time so far = {0:.2f} on iter = {1}'.format(time.time()-begin, i_iter))
 
         scheduler_value.step()
